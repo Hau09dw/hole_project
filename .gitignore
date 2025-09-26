@@ -4,6 +4,5 @@ runs
 venv
 data_segment
 yolo11n.pt
-checkpoints
 outputs
 outputs_50_epochs
