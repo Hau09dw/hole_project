@@ -3,7 +3,6 @@ import cv2
 from models.yolov12_bifpn import YOLOv12_BiFPN
 from utils.decode import decode_yolo_output_multi
 from utils.visualize import overlay_segmentation, draw_boxes
-from datasets.dataset import LabeledDataset
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 

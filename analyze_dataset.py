@@ -1,12 +1,12 @@
 import os
 import numpy as np
-from datasets.dataset import LabeledDataset, UnlabeledDataset
+from datasets.dataset import PotholeDataset
 
 def analyze_dataset(list_file, img_size=640, labeled=True):
     if labeled:
-        ds = LabeledDataset(list_file, img_size=img_size)
+        ds = PotholeDataset(list_file, img_size=img_size)
     else:
-        ds = UnlabeledDataset(list_file, img_size=img_size)
+        ds = PotholeDataset(list_file, img_size=img_size)
 
     num_images = len(ds)
     print(f"📊 {list_file}")
@@ -41,5 +41,6 @@ def analyze_dataset(list_file, img_size=640, labeled=True):
 
 if __name__ == "__main__":
     analyze_dataset("data_segment/train_l.txt", labeled=True)
-    analyze_dataset("data_segment/val.txt", labeled=True)
     analyze_dataset("data_segment/train_u.txt", labeled=False)
+    analyze_dataset("data_segment/val.txt", labeled=True)
+    analyze_dataset("data_segment/test.txt", labeled=True)

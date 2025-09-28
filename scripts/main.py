@@ -66,14 +66,14 @@ def main():
         dataset_l,
         batch_size=cfg["train"]["batch"],
         shuffle=True,
-        num_workers=cfg["data"].get("num_workers", 2),
+        num_workers=cfg["data"]["num_workers"],
         collate_fn=PotholeDataset.collate_fn,
     )
     loader_u = DataLoader(
         dataset_u,
         batch_size=cfg["train"]["batch"],
         shuffle=True,
-        num_workers=cfg["data"].get("num_workers", 2),
+        num_workers=cfg["data"]["num_workers"],
         collate_fn=PotholeDataset.collate_fn,
     )
 
@@ -95,7 +95,7 @@ def main():
 
     # Directories
     os.makedirs(cfg["train"]["save_dir"], exist_ok=True)
-    os.makedirs("outputs/plots", exist_ok=True)
+    os.makedirs(cfg["train"]["save_plot"], exist_ok=True)
 
     # Loss history
     history = {"sup": [], "cons": [], "total": [], "bce": [], "dice": [], "pixel_acc": []}

@@ -14,7 +14,8 @@ train:
   lambda_cons: 0.5
   ema_decay: 0.999
   lambda_sup: 1.0
-  save_dir: outputs/checkpoints
-  
+  save_dir: outputs/checkpoints"
+  save_plot: outputs/plots"
+
 semi:
   min_conf: 0.6

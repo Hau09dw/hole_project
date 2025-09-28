@@ -37,8 +37,8 @@ def generate_split_files(root, output_labeled, output_unlabeled, labeled_ratio=0
         for img_path, _ in unlabeled_samples:
             f.write(f"{img_path}\n")
 
-    print(f"✅ Saved {len(labeled_samples)} labeled samples to {output_labeled}")
-    print(f"✅ Saved {len(unlabeled_samples)} unlabeled samples to {output_unlabeled}")
+    print(f"Saved {len(labeled_samples)} labeled samples to {output_labeled}")
+    print(f"Saved {len(unlabeled_samples)} unlabeled samples to {output_unlabeled}")
 
 
 def generate_eval_files(root, split, output_file):
@@ -61,7 +61,7 @@ def generate_eval_files(root, split, output_file):
     with open(output_file, "w") as f:
         f.writelines(samples)
 
-    print(f"✅ Saved {len(samples)} samples to {output_file}")
+    print(f"Saved {len(samples)} samples to {output_file}")
 
 
 if __name__ == "__main__":
