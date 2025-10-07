@@ -7,14 +7,14 @@ data:
   num_classes: 1
   num_workers: 2
 train:
-  epochs: 200
+  epochs: 130
   batch: 8
   lr: 0.001
   lambda_seg: 1.0
   lambda_cons: 0.5
   ema_decay: 0.999
-  lambda_sup: 1.0
   save_dir: outputs/checkpoints
-  
+  save_plots: outputs/plots
+  augment: True
 semi:
   min_conf: 0.6

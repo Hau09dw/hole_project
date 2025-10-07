@@ -1,116 +1,169 @@
-import os
-import cv2
-import torch
+# scripts/eval.py
+import os, yaml, torch
 import numpy as np
-from torch.utils.data import DataLoader
-from models.yolov12_bifpn import YOLOv12_BiFPN
-from datasets.dataset import PotholeDataset
-from utils.metrics import compute_iou, compute_map
-from ultralytics.utils.ops import xywh2xyxy
-import yaml
 import pandas as pd
-import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
+from datasets.dataset import PotholeDataset
+from models.yolov12_bifpn import YOLOv12_BiFPN
+from utils.metrics import compute_seg_metrics, plot_confusion_matrix
+from utils.visualize import visualize_sample
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-#from prettytable import PrettyTable
-@torch.no_grad()
-def evaluate(cfg_path="configs/configs.yaml", weights="outputs/checkpoints/best.pt", split="val"):
-    # Load config
-    with open(cfg_path, "r") as f:
+import matplotlib.pyplot as plt
+import cv2
+# === Overlay helpers ===
+def to_uint8_img(t):
+    """
+    t: torch.Tensor (3,H,W) hoặc (H,W,3), giá trị [0,1] hoặc [0,255]
+    -> numpy uint8 (H,W,3) RGB
+    """
+    import numpy as np
+    if t.ndim == 3 and t.shape[0] == 3:  # (3,H,W) -> (H,W,3)
+        t = t.permute(1, 2, 0)
+    arr = t.detach().cpu().numpy()
+    if arr.max() <= 1.0:
+        arr = (arr * 255.0).clip(0, 255)
+    return arr.astype(np.uint8)
+
+def overlay_masks_on_image(img_rgb_u8, pred_bin, gt_bin=None, alpha=0.45):
+    """
+    img_rgb_u8: np.uint8 (H,W,3), RGB
+    pred_bin: np.bool_(H,W) dự đoán
+    gt_bin:   np.bool_(H,W) ground-truth (tùy chọn)
+    alpha: độ trong suốt của vùng màu
+
+    Màu quy ước:
+      - TP (pred & gt): vàng (255,255,0)
+      - FP (pred & ~gt): xanh lá (0,255,0)
+      - FN (~pred & gt): đỏ (255,0,0)
+      - Nếu không có gt_bin: toàn bộ pred = xanh lá
+    """
+    import numpy as np
+    h, w, _ = img_rgb_u8.shape
+    color = np.zeros_like(img_rgb_u8, dtype=np.uint8)
+
+    if gt_bin is None:
+        # Chỉ có pred: tô xanh lá
+        color[pred_bin] = (0, 255, 0)
+    else:
+        tp = pred_bin & gt_bin
+        fp = pred_bin & (~gt_bin)
+        fn = (~pred_bin) & gt_bin
+        color[tp] = (255, 255, 0)   # vàng
+        color[fp] = (0, 255, 0)     # xanh lá
+        color[fn] = (255, 0, 0)     # đỏ
+
+    # alpha blend: out = (1-alpha)*img + alpha*color
+    out = img_rgb_u8.astype(np.float32) * (1.0 - alpha) + color.astype(np.float32) * alpha
+    return out.clip(0, 255).astype(np.uint8)
+
+def evaluate():
+    # --- Load config (UTF-8) ---
+    with open("configs/configs.yaml", "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Dataset
-    dataset = PotholeDataset(cfg["data"][split], img_size=cfg["data"]["img_size"])
-    loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=PotholeDataset.collate_fn)
+    # --- Dataset / Loader ---
+    dataset = PotholeDataset(cfg["data"]["val"], img_size=cfg["data"]["img_size"])
+    loader = DataLoader(
+        dataset, batch_size=1, shuffle=False,
+        num_workers=cfg["data"]["num_workers"], collate_fn=PotholeDataset.collate_fn,
+    )
 
-    # Model
+    # --- Model / Checkpoint ---
     model = YOLOv12_BiFPN(num_classes=cfg["data"]["num_classes"]).to(device)
-    model.load_state_dict(torch.load(weights, map_location=device))
+    ckpt_path = os.path.join(cfg["train"]["save_dir"], "best.pt")  # dùng best.pt
+    model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model.eval()
 
-    # Metrics accumulators
-    ious, dices, aps = [], [], []
-    os.makedirs("outputs/vis_eval", exist_ok=True)
+    os.makedirs("outputs/eval_vis", exist_ok=True)
 
-    for i, batch in enumerate(loader):
-        img = batch["img"].to(device)
-        masks_gt = batch["masks"].to(device)   # (B,1,H,W)
-        bboxes_gt = batch["bboxes"]            # list
-        path = batch["path"][0]
+    # --- Running metrics ---
+    dices, pixel_accs, ious = [], [], []
+    cm_total = np.zeros((2, 2), dtype=np.int64)  # [[TN, FP],[FN, TP]]
 
-        out = model(img)
-        seg_out, det_outs = out["seg"], out["det"]
+    with torch.no_grad():
+        for i, batch in enumerate(loader):
+            imgs = batch["img"].to(device)
+            masks_gt = batch["masks"].to(device)
+            out = model(imgs)
 
-        # Debug shapes
-        if isinstance(det_outs, (list, tuple)):
-            # Truy cập vào list bên trong (det_outs[0]) trước khi lặp
-            inner_list = det_outs[0]
-            det_shapes = [f.shape for f in inner_list]
-        else:
-            # Trường hợp det_outs là một tensor duy nhất
-            det_shapes = [det_outs.shape]
-        print(f"[DEBUG] Batch {i}: seg.shape={seg_out.shape}, det_outs={len(det_shapes)} maps: {det_shapes}")
+            # dùng PROB thay vì LOGIT
+            seg_prob = torch.sigmoid(out["seg"])
 
-        # --- segmentation prediction ---
-        seg_pred = torch.sigmoid(seg_out).cpu()[0, 0].numpy()
-        seg_pred_bin = (seg_pred > 0.5).astype(np.uint8)
+            # segmentation metrics (Dice/IoU/PixelAcc)
+            d, pa, iu = compute_seg_metrics(seg_prob, masks_gt)
+            dices.append(d); pixel_accs.append(pa); ious.append(iu)
 
-        if masks_gt.shape[0] > 0:
-            mask_gt = masks_gt[0, 0].cpu().numpy()
-            iou = compute_iou(torch.tensor(seg_pred_bin), torch.tensor(mask_gt))
-            dice = (2 * (seg_pred_bin * mask_gt).sum() + 1) / (seg_pred_bin.sum() + mask_gt.sum() + 1)
-            ious.append(iou.item())
-            dices.append(dice)
+            # accumulate confusion matrix (pixel-level)
+            pred_bin = (seg_prob > 0.5).cpu().numpy().astype(np.uint8).ravel()
+            gt_bin   = (masks_gt > 0.5).cpu().numpy().astype(np.uint8).ravel()
+            cm_total += confusion_matrix(gt_bin, pred_bin, labels=[0, 1])
 
-        # --- detection prediction ---
-        pred_boxes = []
-        preds = det_outs[0] if isinstance(det_outs, (list, tuple)) else det_outs
-        preds = preds[0].cpu()  # batch 0, shape [num_preds, 5+num_classes]
+            # visualize vài mẫu
+            # if i < 10:
+            #     #plot_confusion_matrix(seg_prob[0].cpu(), masks_gt[0].cpu(),
+            #     #                      save_path=f"outputs/eval_vis/confmat_{i}.png")
+            #     visualize_sample(
+            #         imgs, mask_pred=seg_prob, mask_gt=masks_gt,
+            #         save_path=f"outputs/eval_vis/sample_{i}.png"
+            #     )
+            if i < 10: 
+                
+                save_dir = "outputs/eval_vis"
+                os.makedirs(save_dir, exist_ok=True)
 
-        for p in preds:
-            x, y, w, h, obj = p[:5].tolist()
-            if obj > 0.5:
-                box = xywh2xyxy(torch.tensor([[x, y, w, h]])).squeeze(0).numpy()
-                pred_boxes.append((obj, box.tolist()))
+                img_u8 = to_uint8_img(imgs[0])  # (H,W,3) RGB uint8
 
-        gt_boxes = []
-        if len(bboxes_gt) > 0:
-            for box in bboxes_gt[0]:
-                _, cx, cy, bw, bh = box
-                cx, cy, bw, bh = cx*cfg["data"]["img_size"], cy*cfg["data"]["img_size"], bw*cfg["data"]["img_size"], bh*cfg["data"]["img_size"]
-                x1, y1 = int(cx - bw/2), int(cy - bh/2)
-                x2, y2 = int(cx + bw/2), int(cy + bh/2)
-                gt_boxes.append([x1, y1, x2, y2])
+                # xTạo mask nhị phân (H,W)
+                pred = (seg_prob[0, 0] > 0.5).cpu().numpy().astype(bool)
+                gt   = (masks_gt[0, 0] > 0.5).cpu().numpy().astype(bool)
 
-        if len(gt_boxes) > 0:
-            aps.append(compute_map(pred_boxes, gt_boxes, iou_thresh=0.5))
+                # Overlay dự đoán + GT (TP= vàng, FP= xanh lá, FN= đỏ)
+                overlay_both = overlay_masks_on_image(img_u8, pred_bin=pred, gt_bin=gt, alpha=0.45)
+                cv2.imwrite(os.path.join(save_dir, f"overlay_pred_gt_{i}.png"), cv2.cvtColor(overlay_both, cv2.COLOR_RGB2BGR))
 
-        # --- visualization ---
-        img_np = (img[0].cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-        mask_color = np.zeros_like(img_np)
-        mask_color[..., 1] = seg_pred_bin * 255
-        blended = cv2.addWeighted(img_np, 0.7, mask_color, 0.3, 0)
+    # aggregate results
+    results = {}
+    if dices:       results["Dice"] = sum(dices)/len(dices)
+    if pixel_accs:  results["PixelAcc"] = sum(pixel_accs)/len(pixel_accs)
+    if ious:        results["IoU"] = sum(ious)/len(ious)
 
-        for gb in gt_boxes:  # GT bboxes (blue)
-            cv2.rectangle(blended, (gb[0], gb[1]), (gb[2], gb[3]), (255, 0, 0), 2)
-        for _, pb in pred_boxes:  # Pred bboxes (yellow)
-            x1, y1, x2, y2 = map(int, pb)
-            cv2.rectangle(blended, (x1, y1), (x2, y2), (0, 255, 255), 2)
+    TN, FP = int(cm_total[0, 0]), int(cm_total[0, 1])
+    FN, TP = int(cm_total[1, 0]), int(cm_total[1, 1])
+    precision = TP / (TP + FP + 1e-6)
+    recall    = TP / (TP + FN + 1e-6)
+    f1_pixel  = 2 * precision * recall / (precision + recall + 1e-6)
 
-        save_path = os.path.join("outputs/vis_eval", os.path.basename(path))
-        cv2.imwrite(save_path, cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+    results.update({"PixelPrecision": precision, "PixelRecall": recall, "PixelF1": f1_pixel,
+                    "TN": TN, "FP": FP, "FN": FN, "TP": TP})
 
-    # --- Final metrics ---
-    mean_iou = np.mean(ious) if len(ious) else 0
-    mean_dice = np.mean(dices) if len(dices) else 0
-    mean_map = np.mean(aps) if len(aps) else 0
+    for k, v in results.items():
+        print(f"{k}: {v if isinstance(v, int) else f'{v:.4f}'}")
 
-    print(f"Evaluation results on {split} set:")
-    print(f"  mIoU   = {mean_iou:.4f}")
-    print(f"  Dice   = {mean_dice:.4f}")
-    print(f"  mAP@0.5 = {mean_map:.4f}")
-    print("Visualizations saved in outputs/vis_eval/")
+    pd.DataFrame([results]).to_csv("outputs/eval_results.csv", index=False)
+    print("Saved results to outputs/eval_results.csv")
+
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm_total, display_labels=["Background","Pothole"])
+    disp.plot(cmap="Blues", values_format="d")
+    plt.title("Aggregate Confusion Matrix (Val)")
+    plt.savefig("outputs/eval_vis/confmat_aggregate.png", bbox_inches="tight")
+    plt.close()
+
+    # dataset stats
+    try:
+        def count_lines(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return sum(1 for x in f if x.strip())
+        nL = count_lines(cfg["data"]["train_l"])
+        nU = count_lines(cfg["data"]["train_u"])
+        nV = count_lines(cfg["data"]["val"])
+        nT = count_lines(cfg["data"]["test"])
+        ratio = f"{nL}:{nU}" if nU else f"{nL}:0"
+        print(f"\n[DATASET] Labeled={nL}, Unlabeled={nU} (ratio {ratio}), Val={nV}, Test={nT}")
+        print(f"[AUG] augment={cfg['train'].get('augment', False)}, img_size={cfg['data']['img_size']}")
+    except Exception as e:
+        print(f"[WARN] dataset stats skipped: {e}")
 
 if __name__ == "__main__":
     evaluate()

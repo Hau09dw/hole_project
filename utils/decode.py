@@ -12,7 +12,9 @@ def decode_yolo_output_multi(det_outs, num_classes=1, img_size=640, device="cuda
 
     for out in det_outs:  # loop over feature maps
         B, C, H, W = out.shape
-        assert C == 5 + num_classes, f"Expected {5+num_classes} channels, got {C}"
+        if C < 5:
+            raise ValueError(f"Invalid YOLO output channels: {C}")
+
 
         out = out.permute(0, 2, 3, 1).contiguous()  # [B,H,W,C]
         out = out.view(B, -1, C)  # [B, H*W, C]

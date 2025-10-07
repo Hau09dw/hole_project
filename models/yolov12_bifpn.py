@@ -57,7 +57,7 @@ class YOLOv12_BiFPN(nn.Module):
 
         # Detection head (không dùng loss chính)
         self.detect = Detect(nc=num_classes, ch=[256, 256, 256])
-
+        
         # Segmentation head (loss chính)
         self.seg_head = nn.Sequential(
             nn.Conv2d(256 * 3, 256, 3, padding=1, bias=False),

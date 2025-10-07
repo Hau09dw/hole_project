@@ -37,8 +37,8 @@ def generate_split_files(root, output_labeled, output_unlabeled, labeled_ratio=0
         for img_path, _ in unlabeled_samples:
             f.write(f"{img_path}\n")
 
-    print(f"✅ Saved {len(labeled_samples)} labeled samples to {output_labeled}")
-    print(f"✅ Saved {len(unlabeled_samples)} unlabeled samples to {output_unlabeled}")
+    print(f"Saved {len(labeled_samples)} labeled samples to {output_labeled}")
+    print(f"Saved {len(unlabeled_samples)} unlabeled samples to {output_unlabeled}")
 
 
 def generate_eval_files(root, split, output_file):
@@ -61,7 +61,7 @@ def generate_eval_files(root, split, output_file):
     with open(output_file, "w") as f:
         f.writelines(samples)
 
-    print(f"✅ Saved {len(samples)} samples to {output_file}")
+    print(f"Saved {len(samples)} samples to {output_file}")
 
 
 if __name__ == "__main__":
@@ -70,11 +70,11 @@ if __name__ == "__main__":
     # Chia train thành labeled + unlabeled
     generate_split_files(
         root=os.path.join(root, "train"),
-        output_labeled="train_l.txt",
-        output_unlabeled="train_u.txt",
+        output_labeled="data_segment/train_l.txt",
+        output_unlabeled="data_segment/train_u.txt",
         labeled_ratio=0.3
     )
 
     # Tạo file eval
-    generate_eval_files(root, "valid", "val.txt")
-    generate_eval_files(root, "test", "test.txt")
+    generate_eval_files(root, "valid", "data_segment/val.txt")
+    generate_eval_files(root, "test", "data_segment/test.txt")
